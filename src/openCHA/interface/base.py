@@ -111,10 +111,13 @@ class Interface(BaseModel):
                     info="The list of available tasks. Select the ones that you want to use.",
                 )
 
+            # Put in .bashrc your key
+            # export OPENAI_API_KEY="....................."
             with self.gr.Row():
                 openai_api_key_input = self.gr.Textbox(
                     label="OpenAI API Key",
                     info="Enter your OpenAI API key here.",
+                    value=os.getenv("OPENAI_API_KEY", ""),
                 )
                 serp_api_key_input = self.gr.Textbox(
                     label="Serp API Key",
