@@ -9,7 +9,7 @@ from openCHA.tasks.serpapi import SerpAPI
 from openCHA.tasks.test_file import TestFile
 from openCHA.tasks.types import TASK_TO_CLASS
 from openCHA.tasks.initialize_task import initialize_task
-
+from openCHA.tasks.patient_lookup import PatientLookupTask
 
 __all__ = [
     "BaseTask",
@@ -23,4 +23,5 @@ __all__ = [
     "TaskType",
     "TestFile",
     "TASK_TO_CLASS",
+    "PatientLookupTask",
 ]
