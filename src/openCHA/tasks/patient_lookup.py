@@ -4,6 +4,8 @@ import sqlite3
 from openCHA.tasks.task import BaseTask
 
 
+# Questo task costruisce un riepilogo clinico sintetico di un paziente
+# partendo da n_cartella_galileo e interrogando il database SQLite.
 class PatientLookupTask(BaseTask):
   name: str = "patient_lookup"
   chat_name: str = "PatientLookup"
@@ -16,16 +18,24 @@ class PatientLookupTask(BaseTask):
 
   db_path: str = os.path.abspath(os.path.join("data", "hiv_anonimizzato.sqlite"))
 
+  # Normalizza gli input ricevuti dal task convertendo ogni valore in stringa
+  # e rimuovendo eventuali spazi superflui all'inizio e alla fine.
   def _parse_input(self, input_args):
     return [str(arg).strip() for arg in input_args]
 
+  # Restituisce un valore sicuro da stampare nel riepilogo finale.
+  # Se il dato è nullo o vuoto, usa "N/A" per evitare output sporchi o ambigui.
   def _safe(self, value):
     if value is None:
       return "N/A"
+
     if isinstance(value, str) and not value.strip():
       return "N/A"
+
     return str(value)
 
+  # Recupera i dati anagrafici minimi del paziente necessari alla sezione iniziale
+  # del riepilogo clinico.
   def _get_patient(self, conn, n_cartella_galileo):
     return conn.execute(
       """
@@ -36,6 +46,8 @@ class PatientLookupTask(BaseTask):
       (n_cartella_galileo,)
     ).fetchone()
 
+  # Recupera l'anamnesi HIV del paziente. Se non esiste alcun record,
+  # il metodo restituisce None e la sezione finale verrà gestita come assente.
   def _get_anamnesi(self, conn, n_cartella_galileo):
     return conn.execute(
       """
@@ -46,6 +58,8 @@ class PatientLookupTask(BaseTask):
       (n_cartella_galileo,)
     ).fetchone()
 
+  # Recupera gli switch terapeutici più recenti e, per ciascuno, aggiunge
+  # i farmaci somministrati in modo da avere una struttura completa per il rendering.
   def _get_switches(self, conn, n_cartella_galileo, limit=5):
     switches = conn.execute(
       """
@@ -58,6 +72,8 @@ class PatientLookupTask(BaseTask):
       (n_cartella_galileo, limit)
     ).fetchall()
 
+    # Questo blocco arricchisce ogni switch con i farmaci associati.
+    # La lista finale contiene dizionari già pronti per essere trasformati in testo.
     enriched_switches = []
 
     for switch_row in switches:
@@ -82,6 +98,8 @@ class PatientLookupTask(BaseTask):
 
     return enriched_switches
 
+  # Recupera gli esami clinici più recenti del paziente, ordinati dal più nuovo
+  # al più vecchio, così da mostrare prima le informazioni più rilevanti.
   def _get_recent_exams(self, conn, n_cartella_galileo, limit=20):
     return conn.execute(
       """
@@ -94,9 +112,13 @@ class PatientLookupTask(BaseTask):
       (n_cartella_galileo, limit)
     ).fetchall()
 
+  # Esegue il flusso completo del task:
+  # valida l'input, legge i dati dal database e costruisce il testo finale.
   def _execute(self, inputs):
     n_cartella_galileo_raw = inputs[0].strip()
 
+    # Questo blocco valida subito il formato dell'identificativo.
+    # In questo modo vengono evitate query inutili con input non numerici.
     try:
       n_cartella_galileo = int(n_cartella_galileo_raw)
     except ValueError:
@@ -114,10 +136,11 @@ class PatientLookupTask(BaseTask):
       anamnesi = self._get_anamnesi(conn, n_cartella_galileo)
       switches = self._get_switches(conn, n_cartella_galileo, limit=5)
       recent_exams = self._get_recent_exams(conn, n_cartella_galileo, limit=20)
-
     finally:
       conn.close()
 
+    # Questo blocco costruisce il riepilogo finale in sezioni stabili.
+    # La lista di righe semplifica la formattazione e la manutenzione futura.
     lines = []
 
     lines.append(f"Patient summary for n_cartella_galileo={patient['n_cartella_galileo']}")
@@ -154,8 +177,10 @@ class PatientLookupTask(BaseTask):
           lines.append("  Drugs: none recorded.")
         else:
           drug_parts = []
+
           for drug in switch_data["drugs"]:
             drug_parts.append(f"{self._safe(drug['farmaco'])} ({self._safe(drug['dosaggio'])})")
+
           lines.append(f"  Drugs: {', '.join(drug_parts)}")
 
     lines.append("")
@@ -167,4 +192,4 @@ class PatientLookupTask(BaseTask):
       for exam in recent_exams:
         lines.append(f"- {self._safe(exam['data_esame'])}: {self._safe(exam['descrizione'])}; value={self._safe(exam['valore'])}; result={self._safe(exam['esito'])}; unit={self._safe(exam['um'])}; reference={self._safe(exam['ref_altro'])}; code={self._safe(exam['codifica'])}; category={self._safe(exam['sottocategoria'])}; color={self._safe(exam['cromatico'])}")
 
-    return "\n".join(lines)
+    return "\\n".join(lines)
