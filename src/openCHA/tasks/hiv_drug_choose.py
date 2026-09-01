@@ -10,20 +10,33 @@ from openCHA.tasks.task import BaseTask
 class HivDrugChooseTask(BaseTask):
     name: str = "hiv_drug_choose"
     chat_name: str = "HivDrugChoose"
-    description: str = "Riceve un profilo HIV in una sola stringa nel formato HIV-RNA=valore|CD4=valore|CD4/CD8=valore. Cerca nel database i pazienti HIV piu simili e restituisce i farmaci osservati nei casi vicini con misure di similarita e supporto. Il task NON sceglie il farmaco: la scelta finale deve essere effettuata dall'LLM usando questi dati come supporto alla decisione."
+    description: str = "Riceve un profilo HIV in una sola stringa nel formato HIV-RNA=valore|CD4=valore|CD4/CD8=valore. Cerca nel database i pazienti HIV piu simili e restituisce i farmaci osservati nei casi vicini con misure di similarita e supporto. Il task NON sceglie il farmaco: la scelta finale deve essere effettuata dall'LLM usando questi dati come supporto alla decisione e separando chiaramente l'evidenza osservata nel database dalla motivazione clinica generale."
     dependencies: list[str] = []
-    inputs: list[str] = ["Una sola stringa nel formato HIV-RNA=valore|CD4=valore|CD4/CD8=valore. Esempio: HIV-RNA=248|CD4=277|CD4/CD8=0.16. Passare sempre l'intero profilo come una singola stringa."]
-    outputs: list[str] = ["Contesto con pazienti HIV simili, score di similarita, farmaci osservati, frequenze e supporto pesato. L'LLM usa il contesto per scegliere e motivare il farmaco piu appropriato; il task non effettua automaticamente la scelta."]
+    inputs: list[str] = ["Una stringa nel formato HIV-RNA=valore|CD4=valore|CD4/CD8=valore. Esempio: HIV-RNA=248|CD4=277|CD4/CD8=0.16."]
+    outputs: list[str] = ["Contesto con pazienti HIV simili, score di similarita, farmaci osservati, frequenze, supporto pesato e istruzioni per una motivazione clinica documentata. L'LLM usa il contesto per scegliere un farmaco, spiegare il ruolo di HIV-RNA, CD4 e CD4/CD8 e dichiarare esplicitamente i limiti dell'inferenza."]
     output_type: bool = False
     return_direct: bool = False
 
+    # Percorso del database SQLite che contiene esami, anamnesi, switch terapeutici e somministrazioni.
     db_path: ClassVar[str] = os.path.abspath(os.path.join("data", "hiv_anonimizzato.sqlite"))
+
+    # Numero massimo di pazienti simili con terapia disponibile da mantenere nel risultato finale.
     top_k: ClassVar[int] = 20
+
+    # Numero massimo di profili ordinati per similarita per cui cercare il farmaco associato all'ultimo switch disponibile.
     max_profiles_for_drug_lookup: ClassVar[int] = 200
+
+    # Numero massimo di casi individuali mostrati nel contesto inviato all'LLM.
     context_cases: ClassVar[int] = 10
+
+    # Numero massimo di farmaci aggregati mostrati nel contesto inviato all'LLM.
     context_drugs: ClassVar[int] = 8
+
+    # Parametro che controlla quanto rapidamente diminuisce il peso di un caso all'aumentare dello score di distanza.
     similarity_alpha: ClassVar[float] = 6.0
 
+    # Analizza e valida il profilo ricevuto in input.
+    # Serve a normalizzare i nomi degli esami, convertire i valori in float e impedire che dati mancanti, duplicati o non numerici entrino nel calcolo della similarita.
     def _parse_profile(self, inputs):
         if len(inputs) != 1:
             raise ValueError("Expected one string in the format HIV-RNA=valore|CD4=valore|CD4/CD8=valore.")
@@ -82,6 +95,8 @@ class HivDrugChooseTask(BaseTask):
             "cd4_cd8": cd4_cd8,
         }
 
+    # Costruisce le finestre numeriche usate per limitare la ricerca iniziale nel database.
+    # Serve a evitare di confrontare il profilo richiesto con tutti i pazienti e mantiene candidati con HIV-RNA, CD4 e CD4/CD8 sufficientemente vicini ai valori target.
     def _ranges(self, targets):
         return {
             "hiv_min": max(1.0, targets["hiv_rna"] / 4.0),
@@ -92,6 +107,8 @@ class HivDrugChooseTask(BaseTask):
             "ratio_max": targets["cd4_cd8"] + 0.10,
         }
 
+    # Interroga il database e recupera gli esami HIV-RNA, CD4 e CD4/CD8 compatibili con i range calcolati.
+    # Serve a creare l'insieme dei candidati HIV+ su cui viene successivamente costruito lo score di similarita, escludendo per HIV-RNA gli esami del liquor.
     def _get_candidate_exams(self, conn, ranges):
         number_sql = "CAST(REPLACE(TRIM(e.valore), ',', '.') AS REAL)"
 
@@ -108,6 +125,8 @@ class HivDrugChooseTask(BaseTask):
 
         return conn.execute(query, params).fetchall()
 
+    # Raggruppa gli esami per paziente, sceglie per ogni metrica il valore piu vicino al target e calcola uno score complessivo di distanza.
+    # Serve a trasformare le singole righe degli esami in profili confrontabili e a ordinare i pazienti dal piu simile al meno simile rispetto al profilo richiesto.
     def _build_profiles(self, rows, targets):
         grouped = defaultdict(lambda: {
             "hiv_rna": [],
@@ -127,25 +146,30 @@ class HivDrugChooseTask(BaseTask):
             if not metrics["hiv_rna"] or not metrics["cd4"] or not metrics["cd4_cd8"]:
                 continue
 
+            # HIV-RNA viene confrontato in scala logaritmica perche differenze moltiplicative sono clinicamente e numericamente piu informative delle differenze assolute.
             hiv_rna = min(
                 metrics["hiv_rna"],
                 key=lambda value: abs(math.log10(value) - math.log10(targets["hiv_rna"])),
             )
 
+            # CD4 viene confrontato sulla distanza assoluta dal valore target.
             cd4 = min(
                 metrics["cd4"],
                 key=lambda value: abs(value - targets["cd4"]),
             )
 
+            # Il rapporto CD4/CD8 viene confrontato sulla distanza assoluta dal valore target.
             cd4_cd8 = min(
                 metrics["cd4_cd8"],
                 key=lambda value: abs(value - targets["cd4_cd8"]),
             )
 
+            # Ogni componente viene normalizzata rispetto all'ampiezza del range usato nella ricerca, cosi le tre metriche contribuiscono su scale confrontabili.
             hiv_component = abs(math.log10(hiv_rna) - math.log10(targets["hiv_rna"])) / math.log10(4.0)
             cd4_component = abs(cd4 - targets["cd4"]) / 200.0
             ratio_component = abs(cd4_cd8 - targets["cd4_cd8"]) / 0.10
 
+            # Lo score finale e una distanza quadratica media: valori piu bassi indicano maggiore similarita complessiva.
             score = math.sqrt(
                 (
                     hiv_component ** 2
@@ -163,6 +187,7 @@ class HivDrugChooseTask(BaseTask):
                 "score": score,
             })
 
+        # ATTENZIONE METODOLOGICA: HIV-RNA, CD4 e CD4/CD8 vengono scelti indipendentemente tra gli esami disponibili e possono provenire da date diverse. Lo score misura quindi similarita dei valori, non necessariamente un profilo clinico sincronizzato nello stesso momento.
         profiles.sort(
             key=lambda item: (
                 item["score"],
@@ -172,6 +197,8 @@ class HivDrugChooseTask(BaseTask):
 
         return profiles
 
+    # Recupera il farmaco associato all'ultimo switch terapeutico disponibile per i pazienti piu simili.
+    # Serve a collegare ogni profilo di laboratorio a una terapia realmente osservata nel database, senza ancora interpretare quel farmaco come causa dei valori clinici trovati.
     def _get_latest_drugs(self, conn, profiles):
         patient_ids = [
             profile["patient_id"]
@@ -206,6 +233,8 @@ class HivDrugChooseTask(BaseTask):
 
         return drugs
 
+    # Unisce i profili ordinati per similarita con le informazioni terapeutiche recuperate dal database.
+    # Serve a mantenere soltanto i pazienti per cui esiste un farmaco osservato e a limitare il campione finale ai primi top_k casi utili.
     def _link_top_patients(self, profiles, drugs):
         linked = []
 
@@ -225,6 +254,8 @@ class HivDrugChooseTask(BaseTask):
 
         return linked
 
+    # Aggrega l'evidenza dei farmaci osservati nei pazienti simili calcolando frequenza, supporto pesato e statistiche dello score.
+    # Serve a dare piu importanza ai farmaci presenti nei casi realmente vicini al target, evitando che la sola frequenza grezza domini automaticamente la decisione.
     def _summarize_drug_evidence(self, linked):
         frequency = Counter()
         weighted_support = defaultdict(float)
@@ -234,9 +265,8 @@ class HivDrugChooseTask(BaseTask):
         for item in linked:
             drug = item["drug"]
 
-            weight = math.exp(
-                -self.similarity_alpha * item["score"]
-            )
+            # Il peso decresce esponenzialmente con la distanza: un paziente molto simile contribuisce piu di un paziente vicino al limite del campione.
+            weight = math.exp(-self.similarity_alpha * item["score"])
 
             frequency[drug] += 1
             weighted_support[drug] += weight
@@ -247,10 +277,9 @@ class HivDrugChooseTask(BaseTask):
                 item["score"],
             )
 
-        total_weight = sum(
-            weighted_support.values()
-        )
+        total_weight = sum(weighted_support.values())
 
+        # L'ordinamento privilegia prima il supporto pesato, poi la frequenza, quindi la qualita media e il miglior caso osservato.
         drugs = sorted(
             frequency,
             key=lambda drug: (
@@ -273,47 +302,38 @@ class HivDrugChooseTask(BaseTask):
             for drug in drugs
         ]
 
+    # Costruisce il testo di contesto che verra fornito all'LLM per la scelta finale e per la spiegazione clinica.
+    # Serve a presentare in modo leggibile profilo target, range, farmaci aggregati, casi piu simili e regole esplicite contro inferenze cliniche non supportate dai dati.
     def _make_context(self, targets, ranges, linked, evidence):
         lines = [
             "CONTESTO DAL DATABASE HIV",
             f"Profilo richiesto: HIV-RNA={targets['hiv_rna']}, CD4={targets['cd4']}, CD4/CD8={targets['cd4_cd8']}",
             f"Range di ricerca: HIV-RNA={ranges['hiv_min']:.0f}-{ranges['hiv_max']:.0f}, CD4={ranges['cd4_min']:.0f}-{ranges['cd4_max']:.0f}, CD4/CD8={ranges['ratio_min']:.2f}-{ranges['ratio_max']:.2f}",
             f"Pazienti simili con farmaco disponibile: {len(linked)}",
+            "NOTA METODOLOGICA: i farmaci riportati sono terapie osservate nei pazienti simili del database. Questa associazione non dimostra che il farmaco abbia causato i valori HIV-RNA, CD4 o CD4/CD8 osservati e non dimostra da sola efficacia terapeutica nel profilo richiesto.",
         ]
 
         if not linked:
-            lines.append(
-                "Nessun paziente simile con farmaco disponibile e stato trovato."
-            )
-            lines.append(
-                "ISTRUZIONE LLM: spiegare che il database non fornisce evidenza sufficiente per supportare la scelta di un farmaco."
-            )
+            lines.append("Nessun paziente simile con farmaco disponibile e stato trovato.")
+            lines.append("ISTRUZIONE LLM: spiegare che il database non fornisce evidenza sufficiente per supportare la scelta di un farmaco. Non proporre una terapia come se fosse derivata dai dati. Se viene fornita una considerazione clinica generale, separarla esplicitamente dall'evidenza del database e non inventare efficacia, outcome, resistenze, comorbidita o informazioni non presenti nel contesto.")
             return "\n".join(lines)
 
-        lines.append(
-            "EVIDENZA SUI FARMACI NEI PAZIENTI SIMILI:"
-        )
+        lines.append("EVIDENZA SUI FARMACI NEI PAZIENTI SIMILI:")
 
         for item in evidence[:self.context_drugs]:
-            lines.append(
-                f"- farmaco={item['drug']}; pazienti={item['frequency']}/{len(linked)}; supporto_pesato={item['weighted_share']:.1%}; miglior_score={item['best_score']:.4f}; score_medio={item['mean_score']:.4f}"
-            )
+            lines.append(f"- farmaco={item['drug']}; pazienti={item['frequency']}/{len(linked)}; supporto_pesato={item['weighted_share']:.1%}; miglior_score={item['best_score']:.4f}; score_medio={item['mean_score']:.4f}")
 
-        lines.append(
-            "CASI PIU SIMILI:"
-        )
+        lines.append("CASI PIU SIMILI:")
 
         for item in linked[:self.context_cases]:
-            lines.append(
-                f"- score={item['score']:.4f}; HIV-RNA={item['hiv_rna']}; CD4={item['cd4']}; CD4/CD8={item['cd4_cd8']}; farmaco={item['drug']}; classe={item['drug_class']}; anno={item['switch_year']}"
-            )
+            lines.append(f"- score={item['score']:.4f}; HIV-RNA={item['hiv_rna']}; CD4={item['cd4']}; CD4/CD8={item['cd4_cd8']}; farmaco={item['drug']}; classe={item['drug_class']}; anno={item['switch_year']}")
 
-        lines.append(
-            "ISTRUZIONE LLM: selezionare un solo farmaco come supporto alla decisione usando l'intero contesto. Considerare soprattutto la similarita dei singoli pazienti, la coerenza dei casi piu vicini, la frequenza e il supporto pesato dei farmaci. Non scegliere automaticamente il farmaco piu frequente: frequenza e supporto sono evidenze, non una regola di decisione. Usare anche il ragionamento clinico del modello per confrontare le alternative. Rispondere con FARMACO e MOTIVO in modo breve. Non inventare risultati clinici, efficacia osservata o informazioni sul paziente non presenti nel contesto."
-        )
+        lines.append("ISTRUZIONE LLM: selezionare un solo farmaco come supporto alla decisione usando l'intero contesto. Considerare soprattutto la similarita dei singoli pazienti, la coerenza dei casi piu vicini, la frequenza e il supporto pesato dei farmaci. Non scegliere automaticamente il farmaco piu frequente: frequenza e supporto sono evidenze osservazionali, non una regola di decisione e non una prova di efficacia. La motivazione deve distinguere chiaramente EVIDENZA DAL DATABASE e RAGIONAMENTO CLINICO. Nel ragionamento clinico interpretare HIV-RNA come principale indicatore dell'attivita virologica e della risposta virologica alla terapia nel corretto contesto temporale, CD4 come indicatore dello stato immunologico e del recupero immunitario, e CD4/CD8 come informazione aggiuntiva sul profilo immunologico che non deve essere usata da sola per scegliere uno specifico regime. Spiegare perche il farmaco selezionato e clinicamente plausibile o potenzialmente appropriato rispetto a quei valori e agli obiettivi della terapia, ma non affermare che il farmaco abbia prodotto quei valori o che sia sicuramente efficace nel paziente richiesto se il contesto non lo dimostra. Per motivazioni specifiche sul farmaco usare solo conoscenze cliniche consolidate di cui il modello e sicuro; non inventare meccanismi, vantaggi, soglie, percentuali, linee guida, studi, citazioni o risultati clinici. Se non esistono elementi sufficienti per spiegare un vantaggio specifico del farmaco, dichiararlo esplicitamente invece di completare il ragionamento con informazioni speculative. Ricordare che la scelta reale di una terapia antiretrovirale richiede anche elementi non presenti qui, tra cui storia terapeutica, test di resistenza, aderenza, interazioni farmacologiche, comorbidita, coinfezioni e funzione renale o epatica. Rispondere con le sezioni FARMACO, EVIDENZA DAL DATABASE, INTERPRETAZIONE CLINICA DEI VALORI, MOTIVAZIONE CLINICA DEL FARMACO e LIMITI. La MOTIVAZIONE CLINICA DEL FARMACO deve essere sufficientemente argomentata e non ridursi alla sola frase che pazienti simili hanno ricevuto lo stesso farmaco.")
 
         return "\n".join(lines)
 
+    # Coordina l'intero flusso del task: validazione input, ricerca dei candidati, calcolo della similarita, recupero delle terapie, aggregazione dell'evidenza e costruzione del contesto finale.
+    # Serve come unico punto di ingresso eseguito da openCHA e gestisce anche gli errori di input, database assente, errori SQLite e chiusura sicura della connessione.
     def _execute(self, inputs):
         try:
             targets = self._parse_profile(inputs)
@@ -329,39 +349,13 @@ class HivDrugChooseTask(BaseTask):
         conn.row_factory = sqlite3.Row
 
         try:
-            rows = self._get_candidate_exams(
-                conn,
-                ranges,
-            )
-
-            profiles = self._build_profiles(
-                rows,
-                targets,
-            )
-
-            drugs = self._get_latest_drugs(
-                conn,
-                profiles,
-            )
-
-            linked = self._link_top_patients(
-                profiles,
-                drugs,
-            )
-
-            evidence = self._summarize_drug_evidence(
-                linked,
-            )
-
-            return self._make_context(
-                targets,
-                ranges,
-                linked,
-                evidence,
-            )
-
+            rows = self._get_candidate_exams(conn, ranges)
+            profiles = self._build_profiles(rows, targets)
+            drugs = self._get_latest_drugs(conn, profiles)
+            linked = self._link_top_patients(profiles, drugs)
+            evidence = self._summarize_drug_evidence(linked)
+            return self._make_context(targets, ranges, linked, evidence)
         except sqlite3.Error as error:
             return f"Database error in hiv_drug_choose: {error}"
-
         finally:
             conn.close()

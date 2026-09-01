@@ -18,4 +18,6 @@ class TaskType(str, Enum):
     QUERY_NUTRITIONIX = "query_nutritionix"
     CALCULATE_FOOD_RISK_FACTOR = "calculate_food_risk_factor"
     GOOGLE_SEARCH = "google_search"
-    PATIENT_LOOKUP = "patient_lookup"
+    HIV_PATIENT_LOOKUP = "hiv_patient_lookup"
+    HIV_DRUG_CHOOSE = "hiv_drug_choose"
+    HIV_DRUG_CHOOSE_NO_DB = "hiv_drug_choose_no_db"

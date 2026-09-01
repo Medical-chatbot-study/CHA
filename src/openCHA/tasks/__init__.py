@@ -9,7 +9,9 @@ from openCHA.tasks.serpapi import SerpAPI
 from openCHA.tasks.test_file import TestFile
 from openCHA.tasks.types import TASK_TO_CLASS
 from openCHA.tasks.initialize_task import initialize_task
-from openCHA.tasks.patient_lookup import PatientLookupTask
+from openCHA.tasks.hiv_patient_lookup import HivPatientLookupTask
+from openCHA.tasks.hiv_drug_choose import HivDrugChooseTask
+from openCHA.tasks.hiv_drug_choose_no_db import HivDrugChooseNoDbTask
 
 __all__ = [
     "BaseTask",
@@ -23,5 +25,8 @@ __all__ = [
     "TaskType",
     "TestFile",
     "TASK_TO_CLASS",
-    "PatientLookupTask",
+    "HivPatientLookupTask",
+    "HivExamLookupTask",
+    "HivDrugChooseTask",
+    "HivDrugChooseNoDbTask",
 ]

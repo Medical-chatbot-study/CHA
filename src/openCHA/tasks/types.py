@@ -21,7 +21,9 @@ from openCHA.tasks.nutritionix import (
     CalculateFoodRiskFactor,
 )
 from openCHA.tasks.nutritionix import QueryNutritionix
-from openCHA.tasks.patient_lookup import PatientLookupTask
+from openCHA.tasks.hiv_patient_lookup import HivPatientLookupTask
+from openCHA.tasks.hiv_drug_choose import HivDrugChooseTask
+from openCHA.tasks.hiv_drug_choose_no_db import HivDrugChooseNoDbTask
 
 TASK_TO_CLASS: Dict[TaskType, Type[BaseTask]] = {
     TaskType.SERPAPI: SerpAPI,
@@ -40,5 +42,7 @@ TASK_TO_CLASS: Dict[TaskType, Type[BaseTask]] = {
     TaskType.QUERY_NUTRITIONIX: QueryNutritionix,
     TaskType.CALCULATE_FOOD_RISK_FACTOR: CalculateFoodRiskFactor,
     TaskType.GOOGLE_SEARCH: GoogleSearch,
-    TaskType.PATIENT_LOOKUP: PatientLookupTask,
+    TaskType.HIV_PATIENT_LOOKUP: HivPatientLookupTask,
+    TaskType.HIV_DRUG_CHOOSE: HivDrugChooseTask,
+    TaskType.HIV_DRUG_CHOOSE_NO_DB: HivDrugChooseNoDbTask,
 }
